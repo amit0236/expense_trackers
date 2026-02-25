@@ -1,0 +1,561 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Expense Tracker</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Font Awesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0-beta3/css/all.min.css">
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+    <!-- Tesseract.js -->
+    <script src="https://cdn.jsdelivr.net/npm/tesseract.js@4.0.2/dist/tesseract.min.js"></script>
+    <style>
+        /* Custom transitions */
+        .tab-btn.active {
+            background-color: #3b82f6;
+            color: white;
+        }
+
+        .hidden {
+            display: none;
+        }
+    </style>
+</head>
+
+<body class="bg-gray-100 font-sans antialiased">
+    <div id="app" class="min-h-screen flex flex-col">
+        <!-- Dynamic content will be injected here -->
+    </div>
+
+    <script>
+        (function () {
+            // ---------- STATE & STORAGE ----------
+            const STORAGE_KEYS = {
+                USERS: 'expense_tracker_users',
+                CURRENT_USER: 'expense_tracker_current_user',
+                EXPENSES: 'expense_tracker_expenses'
+            };
+
+            // Helper: load users
+            function loadUsers() {
+                return JSON.parse(localStorage.getItem(STORAGE_KEYS.USERS)) || [];
+            }
+
+            // Helper: save users
+            function saveUsers(users) {
+                localStorage.setItem(STORAGE_KEYS.USERS, JSON.stringify(users));
+            }
+
+            // Helper: load current user email
+            function loadCurrentUser() {
+                return localStorage.getItem(STORAGE_KEYS.CURRENT_USER) || null;
+            }
+
+            // Helper: save current user
+            function saveCurrentUser(email) {
+                if (email) localStorage.setItem(STORAGE_KEYS.CURRENT_USER, email);
+                else localStorage.removeItem(STORAGE_KEYS.CURRENT_USER);
+            }
+
+            // Helper: load expenses for current user
+            function loadExpenses() {
+                const all = JSON.parse(localStorage.getItem(STORAGE_KEYS.EXPENSES)) || [];
+                const currentUser = loadCurrentUser();
+                return all.filter(e => e.userId === currentUser);
+            }
+
+            // Helper: save expense (add/update)
+            function saveExpense(expense) {
+                const all = JSON.parse(localStorage.getItem(STORAGE_KEYS.EXPENSES)) || [];
+                const currentUser = loadCurrentUser();
+                if (!currentUser) return;
+                if (expense.id) {
+                    // update
+                    const index = all.findIndex(e => e.id === expense.id);
+                    if (index !== -1) all[index] = expense;
+                } else {
+                    // new
+                    expense.id = Date.now() + Math.random().toString(36);
+                    expense.userId = currentUser;
+                    all.push(expense);
+                }
+                localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(all));
+            }
+
+            // Helper: delete expense
+            function deleteExpense(id) {
+                let all = JSON.parse(localStorage.getItem(STORAGE_KEYS.EXPENSES)) || [];
+                all = all.filter(e => e.id !== id);
+                localStorage.setItem(STORAGE_KEYS.EXPENSES, JSON.stringify(all));
+            }
+
+            // Helper: get current user's budget
+            function getUserBudget() {
+                const users = loadUsers();
+                const currentUser = loadCurrentUser();
+                const user = users.find(u => u.email === currentUser);
+                return user ? user.budget || 0 : 0;
+            }
+
+            // Helper: update user budget
+            function updateUserBudget(budget) {
+                const users = loadUsers();
+                const currentUser = loadCurrentUser();
+                const user = users.find(u => u.email === currentUser);
+                if (user) {
+                    user.budget = budget;
+                    saveUsers(users);
+                }
+            }
+
+            // ---------- GLOBAL STATE ----------
+            let currentView = 'dashboard'; // dashboard, add, scan, reports, settings
+            let ocrText = '';
+            let ocrAmount = '';
+            let ocrDate = '';
+
+            // ---------- RENDER FUNCTION (Simple router) ----------
+            function render() {
+                const app = document.getElementById('app');
+                const currentUser = loadCurrentUser();
+
+                if (!currentUser) {
+                    // Show login/register
+                    renderAuth(app);
+                } else {
+                    // Show main app with navbar
+                    renderMainApp(app);
+                }
+            }
+
+            // ---------- AUTH VIEW (Login/Register) ----------
+            function renderAuth(container) {
+                container.innerHTML = `
+          <div class="flex items-center justify-center min-h-screen bg-gray-100">
+            <div class="bg-white p-8 rounded-lg shadow-md w-96">
+              <h2 class="text-2xl font-bold mb-6 text-center">Smart Expense Tracker</h2>
+              <div id="auth-tabs" class="flex mb-4">
+                <button id="login-tab" class="flex-1 py-2 text-center border-b-2 border-blue-500 font-semibold">Login</button>
+                <button id="register-tab" class="flex-1 py-2 text-center border-b-2 border-transparent">Register</button>
+              </div>
+              <div id="auth-forms">
+                <!-- Login form -->
+                <form id="login-form" class="space-y-4">
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700">Email</label>
+                    <input type="email" id="login-email" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700">Password</label>
+                    <input type="password" id="login-password" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+                  </div>
+                  <button type="submit" class="w-full bg-blue-500 text-white py-2 rounded-md hover:bg-blue-600">Login</button>
+                </form>
+                <!-- Register form (hidden initially) -->
+                <form id="register-form" class="space-y-4 hidden">
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700">Name</label>
+                    <input type="text" id="register-name" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700">Email</label>
+                    <input type="email" id="register-email" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+                  </div>
+                  <div>
+                    <label class="block text-sm font-medium text-gray-700">Password</label>
+                    <input type="password" id="register-password" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+                  </div>
+                  <button type="submit" class="w-full bg-green-500 text-white py-2 rounded-md hover:bg-green-600">Register</button>
+                </form>
+              </div>
+              <div id="auth-error" class="mt-4 text-red-500 text-sm"></div>
+            </div>
+          </div>
+        `;
+
+                // Tab switching
+                const loginTab = document.getElementById('login-tab');
+                const registerTab = document.getElementById('register-tab');
+                const loginForm = document.getElementById('login-form');
+                const registerForm = document.getElementById('register-form');
+
+                loginTab.addEventListener('click', () => {
+                    loginTab.classList.add('border-blue-500', 'font-semibold');
+                    registerTab.classList.remove('border-blue-500', 'font-semibold');
+                    loginForm.classList.remove('hidden');
+                    registerForm.classList.add('hidden');
+                });
+
+                registerTab.addEventListener('click', () => {
+                    registerTab.classList.add('border-blue-500', 'font-semibold');
+                    loginTab.classList.remove('border-blue-500', 'font-semibold');
+                    registerForm.classList.remove('hidden');
+                    loginForm.classList.add('hidden');
+                });
+
+                // Login submit
+                loginForm.addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    const email = document.getElementById('login-email').value;
+                    const password = document.getElementById('login-password').value;
+                    const users = loadUsers();
+                    const user = users.find(u => u.email === email && u.password === password); // simple plaintext (demo only)
+                    if (user) {
+                        saveCurrentUser(email);
+                        render();
+                    } else {
+                        document.getElementById('auth-error').innerText = 'Invalid email or password';
+                    }
+                });
+
+                // Register submit
+                registerForm.addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    const name = document.getElementById('register-name').value;
+                    const email = document.getElementById('register-email').value;
+                    const password = document.getElementById('register-password').value;
+                    const users = loadUsers();
+                    if (users.find(u => u.email === email)) {
+                        document.getElementById('auth-error').innerText = 'Email already exists';
+                        return;
+                    }
+                    const newUser = { name, email, password, budget: 0 };
+                    users.push(newUser);
+                    saveUsers(users);
+                    saveCurrentUser(email);
+                    render();
+                });
+            }
+
+            // ---------- MAIN APP WITH NAVBAR ----------
+            function renderMainApp(container) {
+                container.innerHTML = `
+          <nav class="bg-white shadow-md p-4 flex justify-between items-center">
+            <h1 class="text-xl font-bold text-blue-600">📊 SmartExpense</h1>
+            <div class="space-x-2">
+              <button id="nav-dashboard" class="tab-btn px-4 py-2 rounded-md transition ${currentView === 'dashboard' ? 'active' : ''}">Dashboard</button>
+              <button id="nav-add" class="tab-btn px-4 py-2 rounded-md transition ${currentView === 'add' ? 'active' : ''}">Add</button>
+              <button id="nav-scan" class="tab-btn px-4 py-2 rounded-md transition ${currentView === 'scan' ? 'active' : ''}">Scan</button>
+              <button id="nav-reports" class="tab-btn px-4 py-2 rounded-md transition ${currentView === 'reports' ? 'active' : ''}">Reports</button>
+              <button id="nav-settings" class="tab-btn px-4 py-2 rounded-md transition ${currentView === 'settings' ? 'active' : ''}">Settings</button>
+              <button id="logout-btn" class="ml-4 px-4 py-2 bg-red-500 text-white rounded-md hover:bg-red-600">Logout</button>
+            </div>
+          </nav>
+          <div id="view-container" class="flex-1 p-6"></div>
+        `;
+
+                // Navigation
+                document.getElementById('nav-dashboard').addEventListener('click', () => { currentView = 'dashboard'; render(); });
+                document.getElementById('nav-add').addEventListener('click', () => { currentView = 'add'; render(); });
+                document.getElementById('nav-scan').addEventListener('click', () => { currentView = 'scan'; render(); });
+                document.getElementById('nav-reports').addEventListener('click', () => { currentView = 'reports'; render(); });
+                document.getElementById('nav-settings').addEventListener('click', () => { currentView = 'settings'; render(); });
+                document.getElementById('logout-btn').addEventListener('click', () => {
+                    saveCurrentUser(null);
+                    render();
+                });
+
+                // Render current view inside view-container
+                const viewContainer = document.getElementById('view-container');
+                switch (currentView) {
+                    case 'dashboard': renderDashboard(viewContainer); break;
+                    case 'add': renderAddExpense(viewContainer); break;
+                    case 'scan': renderScanReceipt(viewContainer); break;
+                    case 'reports': renderReports(viewContainer); break;
+                    case 'settings': renderSettings(viewContainer); break;
+                    default: renderDashboard(viewContainer);
+                }
+            }
+
+            // ---------- DASHBOARD VIEW ----------
+            function renderDashboard(container) {
+                const expenses = loadExpenses();
+                const currentMonth = new Date().getMonth();
+                const currentYear = new Date().getFullYear();
+                const monthlyExpenses = expenses.filter(e => {
+                    const d = new Date(e.date);
+                    return d.getMonth() === currentMonth && d.getFullYear() === currentYear;
+                });
+                const totalSpent = monthlyExpenses.reduce((sum, e) => sum + e.amount, 0);
+                const budget = getUserBudget();
+                const budgetPercent = budget > 0 ? Math.min(100, (totalSpent / budget) * 100) : 0;
+                const recent = expenses.sort((a, b) => new Date(b.date) - new Date(a.date)).slice(0, 5);
+
+                // Category aggregation for chart
+                const categories = {};
+                monthlyExpenses.forEach(e => { categories[e.category] = (categories[e.category] || 0) + e.amount; });
+
+                container.innerHTML = `
+          <div class="grid grid-cols-1 md:grid-cols-3 gap-6">
+            <!-- Budget Card -->
+            <div class="bg-white p-6 rounded-lg shadow-md col-span-1">
+              <h2 class="text-lg font-semibold mb-2">Monthly Budget</h2>
+              <p class="text-3xl font-bold">$${totalSpent.toFixed(2)} / $${budget.toFixed(2)}</p>
+              <div class="w-full bg-gray-200 rounded-full h-2.5 mt-2">
+                <div class="bg-blue-600 h-2.5 rounded-full" style="width: ${budgetPercent}%"></div>
+              </div>
+              ${totalSpent > budget ? '<p class="text-red-500 mt-2">⚠️ Budget exceeded!</p>' : ''}
+            </div>
+            <!-- Anomaly Alert (simple: any expense > 2*average) -->
+            <div class="bg-white p-6 rounded-lg shadow-md col-span-1">
+              <h2 class="text-lg font-semibold mb-2">Anomaly Check</h2>
+              ${(() => {
+                        const avg = monthlyExpenses.length ? totalSpent / monthlyExpenses.length : 0;
+                        const anomalies = monthlyExpenses.filter(e => e.amount > avg * 2);
+                        return anomalies.length ?
+                            `<p class="text-orange-500">⚠️ ${anomalies.length} unusually high expense(s) detected.</p>` :
+                            `<p class="text-green-500">✅ No anomalies this month.</p>`;
+                    })()}
+            </div>
+            <!-- Forecast -->
+            <div class="bg-white p-6 rounded-lg shadow-md col-span-1">
+              <h2 class="text-lg font-semibold mb-2">Next Month Forecast</h2>
+              ${(() => {
+                        const months = [];
+                        for (let i = 1; i <= 3; i++) {
+                            let d = new Date();
+                            d.setMonth(d.getMonth() - i);
+                            const month = d.getMonth();
+                            const year = d.getFullYear();
+                            const total = expenses.filter(e => {
+                                const ed = new Date(e.date);
+                                return ed.getMonth() === month && ed.getFullYear() === year;
+                            }).reduce((s, e) => s + e.amount, 0);
+                            months.push(total);
+                        }
+                        const avg = months.length ? (months.reduce((a, b) => a + b, 0) / months.length).toFixed(2) : 0;
+                        return `<p class="text-2xl font-bold">$${avg}</p><p class="text-sm text-gray-500">based on last 3 months average</p>`;
+                    })()}
+            </div>
+          </div>
+
+          <!-- Chart and Recent -->
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mt-6">
+            <div class="bg-white p-6 rounded-lg shadow-md">
+              <h2 class="text-lg font-semibold mb-4">Spending by Category</h2>
+              <canvas id="categoryChart" width="400" height="200"></canvas>
+            </div>
+            <div class="bg-white p-6 rounded-lg shadow-md">
+              <h2 class="text-lg font-semibold mb-4">Recent Transactions</h2>
+              <ul class="divide-y">
+                ${recent.map(e => `
+                  <li class="py-2 flex justify-between">
+                    <span>${new Date(e.date).toLocaleDateString()} - ${e.category} - ${e.description || ''}</span>
+                    <span class="font-semibold">$${e.amount.toFixed(2)}</span>
+                  </li>
+                `).join('')}
+              </ul>
+            </div>
+          </div>
+        `;
+
+                // Draw chart
+                const ctx = document.getElementById('categoryChart').getContext('2d');
+                new Chart(ctx, {
+                    type: 'pie',
+                    data: {
+                        labels: Object.keys(categories),
+                        datasets: [{
+                            data: Object.values(categories),
+                            backgroundColor: ['#f87171', '#60a5fa', '#34d399', '#fbbf24', '#a78bfa', '#f472b6']
+                        }]
+                    }
+                });
+            }
+
+            // ---------- ADD EXPENSE VIEW ----------
+            function renderAddExpense(container) {
+                container.innerHTML = `
+          <div class="max-w-lg mx-auto bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-2xl font-bold mb-6">Add Expense</h2>
+            <form id="expense-form">
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700">Amount ($)</label>
+                <input type="number" step="0.01" id="amount" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+              </div>
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700">Date</label>
+                <input type="date" id="date" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+              </div>
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700">Category</label>
+                <select id="category" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+                  <option value="Food">Food</option>
+                  <option value="Transport">Transport</option>
+                  <option value="Shopping">Shopping</option>
+                  <option value="Entertainment">Entertainment</option>
+                  <option value="Bills">Bills</option>
+                  <option value="Other">Other</option>
+                </select>
+              </div>
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700">Description (optional)</label>
+                <input type="text" id="description" class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+              </div>
+              <button type="submit" class="w-full bg-blue-500 text-white py-2 rounded-md hover:bg-blue-600">Save Expense</button>
+            </form>
+          </div>
+        `;
+                document.getElementById('expense-form').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    const amount = parseFloat(document.getElementById('amount').value);
+                    const date = document.getElementById('date').value;
+                    const category = document.getElementById('category').value;
+                    const description = document.getElementById('description').value;
+                    const expense = { amount, date, category, description };
+                    saveExpense(expense);
+                    alert('Expense added!');
+                    currentView = 'dashboard';
+                    render();
+                });
+            }
+
+            // ---------- SCAN RECEIPT VIEW ----------
+            function renderScanReceipt(container) {
+                container.innerHTML = `
+          <div class="max-w-2xl mx-auto bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-2xl font-bold mb-6">Scan Receipt</h2>
+            <input type="file" id="receipt-image" accept="image/*" class="mb-4">
+            <button id="scan-btn" class="bg-blue-500 text-white px-4 py-2 rounded-md hover:bg-blue-600">Extract Text</button>
+            <div id="ocr-progress" class="mt-4 text-gray-600"></div>
+            <div id="ocr-result" class="mt-4 hidden">
+              <h3 class="font-semibold">Extracted Info:</h3>
+              <p><strong>Amount:</strong> <span id="ocr-amount"></span></p>
+              <p><strong>Date:</strong> <span id="ocr-date"></span></p>
+              <p><strong>Full Text:</strong></p>
+              <pre id="ocr-fulltext" class="bg-gray-100 p-2 rounded text-sm max-h-60 overflow-auto"></pre>
+              <button id="use-ocr-btn" class="mt-4 bg-green-500 text-white px-4 py-2 rounded-md">Use this data</button>
+            </div>
+          </div>
+        `;
+
+                document.getElementById('scan-btn').addEventListener('click', () => {
+                    const file = document.getElementById('receipt-image').files[0];
+                    if (!file) return alert('Please select an image.');
+                    const progress = document.getElementById('ocr-progress');
+                    progress.innerText = 'Processing...';
+                    Tesseract.recognize(file, 'eng', {
+                        logger: m => { if (m.status === 'recognizing text') progress.innerText = `Progress: ${(m.progress * 100).toFixed(1)}%`; }
+                    }).then(({ data: { text } }) => {
+                        progress.innerText = 'Done!';
+                        // Simple parsing
+                        const lines = text.split('\n');
+                        let amount = '';
+                        let date = '';
+                        // Find amount: look for $ followed by number
+                        const amountRegex = /\$?\s?(\d+\.\d{2})/;
+                        for (let line of lines) {
+                            const match = line.match(amountRegex);
+                            if (match) { amount = match[1]; break; }
+                        }
+                        // Find date: mm/dd/yyyy or dd/mm/yyyy
+                        const dateRegex = /(\d{1,2}[\/\-]\d{1,2}[\/\-]\d{2,4})/;
+                        for (let line of lines) {
+                            const match = line.match(dateRegex);
+                            if (match) { date = match[1]; break; }
+                        }
+                        ocrAmount = amount;
+                        ocrDate = date;
+                        ocrText = text;
+                        document.getElementById('ocr-amount').innerText = amount || 'Not found';
+                        document.getElementById('ocr-date').innerText = date || 'Not found';
+                        document.getElementById('ocr-fulltext').innerText = text;
+                        document.getElementById('ocr-result').classList.remove('hidden');
+                    });
+                });
+
+                document.getElementById('use-ocr-btn')?.addEventListener('click', () => {
+                    // Pre-fill add form with extracted data
+                    currentView = 'add';
+                    render();
+                    // We need to set values after render, use setTimeout
+                    setTimeout(() => {
+                        if (ocrAmount) document.getElementById('amount').value = ocrAmount;
+                        if (ocrDate) {
+                            // Convert to YYYY-MM-DD if possible
+                            let parts = ocrDate.split(/[\/\-]/);
+                            if (parts.length === 3) {
+                                let year = parts[2].length === 2 ? '20' + parts[2] : parts[2];
+                                let month = parts[0].padStart(2, '0');
+                                let day = parts[1].padStart(2, '0');
+                                document.getElementById('date').value = `${year}-${month}-${day}`;
+                            }
+                        }
+                    }, 100);
+                });
+            }
+
+            // ---------- REPORTS VIEW ----------
+            function renderReports(container) {
+                const expenses = loadExpenses();
+                // Group by month-year
+                const months = {};
+                expenses.forEach(e => {
+                    const d = new Date(e.date);
+                    const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`;
+                    if (!months[key]) months[key] = { total: 0, categories: {} };
+                    months[key].total += e.amount;
+                    months[key].categories[e.category] = (months[key].categories[e.category] || 0) + e.amount;
+                });
+
+                container.innerHTML = `
+          <div class="bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-2xl font-bold mb-4">Monthly Reports</h2>
+            <div class="space-y-6">
+              ${Object.keys(months).sort().reverse().map(key => {
+                    const [year, month] = key.split('-');
+                    const monthName = new Date(year, month - 1).toLocaleString('default', { month: 'long' });
+                    return `
+                  <div class="border rounded p-4">
+                    <h3 class="text-lg font-semibold">${monthName} ${year} - Total: $${months[key].total.toFixed(2)}</h3>
+                    <div class="mt-2">
+                      ${Object.entries(months[key].categories).map(([cat, amt]) => `
+                        <div class="flex justify-between">
+                          <span>${cat}</span>
+                          <span>$${amt.toFixed(2)}</span>
+                        </div>
+                      `).join('')}
+                    </div>
+                  </div>
+                `;
+                }).join('')}
+            </div>
+          </div>
+        `;
+            }
+
+            // ---------- SETTINGS VIEW ----------
+            function renderSettings(container) {
+                const budget = getUserBudget();
+                container.innerHTML = `
+          <div class="max-w-lg mx-auto bg-white p-6 rounded-lg shadow-md">
+            <h2 class="text-2xl font-bold mb-6">Settings</h2>
+            <form id="budget-form">
+              <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700">Monthly Budget ($)</label>
+                <input type="number" step="0.01" id="budget" value="${budget}" required class="mt-1 block w-full border border-gray-300 rounded-md shadow-sm p-2">
+              </div>
+              <button type="submit" class="w-full bg-blue-500 text-white py-2 rounded-md hover:bg-blue-600">Save Budget</button>
+            </form>
+          </div>
+        `;
+                document.getElementById('budget-form').addEventListener('submit', (e) => {
+                    e.preventDefault();
+                    const newBudget = parseFloat(document.getElementById('budget').value);
+                    updateUserBudget(newBudget);
+                    alert('Budget updated');
+                    render();
+                });
+            }
+
+            // Initial render
+            render();
+        })();
+    </script>
+</body>
+
+</html>
